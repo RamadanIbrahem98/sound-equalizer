@@ -1,8 +1,8 @@
 # sound-equalizer
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/RamadanIbrahem98/multiChannelSignalViewer?style=plastic&logo=appveyor&color=blue" alt="license" />
-  <img src="https://img.shields.io/github/last-commit/RamadanIbrahem98/multiChannelSignalViewer?style=plastic&logo=appveyor" alt="last-commit" />
+  <img src="https://img.shields.io/github/license/RamadanIbrahem98/sound-equalizer?style=plastic&logo=appveyor&color=blue" alt="license" />
+  <img src="https://img.shields.io/github/last-commit/RamadanIbrahem98/sound-equalizer?style=plastic&logo=appveyor" alt="last-commit" />
 </p>
 
 <p align="center">
