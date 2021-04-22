@@ -17,7 +17,7 @@ from PDF import PDF
 
 def time_stamp(ms):
     hours, remainder = divmod(ms, 3_600_000)
-    minutes, r = divmod(remainder, 60_000)
+    minutes, remainder = divmod(remainder, 60_000)
     seconds, _ = divmod(remainder, 1_000)
     return ("%d:%02d:%02d" % (hours, minutes, seconds)) if hours else ("%d:%02d" % (minutes, seconds))
 
@@ -50,8 +50,8 @@ class MainWindow(qtw.QMainWindow):
         self.spectrogram_power_range = {'min': np.array([]), 'max': np.array([])}
         
 
-        self.ui.min_pixel_intensity.valueChanged.connect(lambda: self.spectrogram_pixels_intensity('min'))
-        self.ui.max_pixel_intensity.valueChanged.connect(lambda: self.spectrogram_pixels_intensity('max'))
+        self.ui.min_pixel_intensity.sliderReleased.connect(lambda: self.spectrogram_pixels_intensity('min'))
+        self.ui.max_pixel_intensity.sliderReleased.connect(lambda: self.spectrogram_pixels_intensity('max'))
 
         self.spectrogram_time_min, self.spectrogram_time_max = 0, 0             # Sync With Play
 
@@ -68,7 +68,7 @@ class MainWindow(qtw.QMainWindow):
             slider.setStyleSheet('selection-background-color: grey')
 
         for index, slider in self.band_slider.items():
-            slider.valueChanged.connect(lambda _, index=index: self.slider_gain_updated(index))
+            slider.sliderReleased.connect(lambda index=index: self.slider_gain_updated(index))
 
         self.available_palettes = ['twilight', 'Blues', 'Greys', 'ocean', 'nipy_spectral']
         self.current_color_palette = self.available_palettes[0]
@@ -275,8 +275,6 @@ class MainWindow(qtw.QMainWindow):
         if(position <= minRange * 1000):
             self.plot_widget[widget].plotItem.getViewBox().translateBy(-minRange)
             self.synchronize()
-
-    hours
 
     def zoomin(self) -> None:
         self.ui.graph_before.plotItem.getViewBox().scaleBy((0.75, 1.0))
