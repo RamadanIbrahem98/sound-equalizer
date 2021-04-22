@@ -27,7 +27,6 @@ class PDF(FPDF):
         self.cell(self.WIDTH - 142)
         self.cell(60, 1, 'Sound Equalizer', 0, 0, 'C')
         self.ln(20)
-#
 
     def footer(self):
         # Page numbers in the footer
@@ -36,26 +35,14 @@ class PDF(FPDF):
         self.set_text_color(128)
         self.cell(0, 10, 'Page ' + str(self.page_no()), 0, 0, 'C')
 
-    def page_body(self, images, PLOT_DIR):
-        # image    15 from left   25 from top    self.width - 30 -> distance to right (width of the graph)
-        self.image(PLOT_DIR + '/' + images[0], 15, 30, self.WIDTH - 30)
-        self.image(PLOT_DIR + '/' +
-                   images[1], 15, self.WIDTH / 2 + 20, self.WIDTH - 30)
-            
-        # self.cell('Dr.Name: %d' %data[0])
-        # self.ln(190)
-        # self.cell(0,3,f'Dr.Name: {data[0][0]}                    Speciality: {data[0][1]}')
-        # self.ln(7)
-        # self.cell(0,3,f'Patient Name: {data[0][2]}                    Age: {data[0][3]}')
-        # self.ln(7)
-        # self.cell(0,3,f'Diagnosis: {data[0][4]}    Medicine: {data[0][5]}   Dose: {data[0][6]} /day  ')            
-        #self.cell(0.3,f'Speciality: {data[0][0]}')
-        
 
     def print_page(self, images, PLOT_DIR):
         # Generates the report
         self.add_page()
-        self.page_body(images, PLOT_DIR)
+        # image    15 from left   25 from top    self.width - 30 -> distance to right (width of the graph)
+        self.image(PLOT_DIR + '/' + images[0], 15, 30, self.WIDTH - 30)
+        self.image(PLOT_DIR + '/' +
+                   images[1], 15, self.WIDTH / 2 + 20, self.WIDTH - 30)
 
     def construct(self, PLOT_DIR):
         pages_data = []
@@ -67,4 +54,4 @@ class PDF(FPDF):
         pages = len(files) // 2
         for i in range(pages):
             pages_data.append([files[0+i], files[pages+i]])
-        return [*pages_data]
+        return pages_data

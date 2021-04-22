@@ -1,4 +1,5 @@
 import sys, os, shutil
+from librosa.core.spectrum import _spectrogram
 import numpy as np
 import pyqtgraph as pg
 from PyQt5 import QtWidgets as qtw
@@ -15,10 +16,10 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PDF import PDF
 
 def time_stamp(ms):
-    h, r = divmod(ms, 3_600_000)
-    m, r = divmod(r, 60_000)
-    s, _ = divmod(r, 1_000)
-    return ("%d:%02d:%02d" % (h, m, s)) if h else ("%d:%02d" % (m, s))
+    hours, remainder = divmod(ms, 3_600_000)
+    minutes, r = divmod(remainder, 60_000)
+    seconds, _ = divmod(remainder, 1_000)
+    return ("%d:%02d:%02d" % (hours, minutes, seconds)) if hours else ("%d:%02d" % (minutes, seconds))
 
 class MainWindow(qtw.QMainWindow):
     def __init__(self):
@@ -27,100 +28,63 @@ class MainWindow(qtw.QMainWindow):
         self.ui.setupUi(self)
         self.show()
 
+        
+        self.samples = None
+        self.sampling_rate = None
+        self.samples_after = None
+
+        self.first_turn = True              # This Prevents the Spectrogram range variables from being overwritten
+
         self.PLOT_DIR = 'Plots'
         self.PDF_DIR = 'PDFs'
-        self.amplitude = [[], []]
-        self.graphChannels = [self.ui.graph_before,self.ui.graph_after]
-        self.spectrogramChannels = [self.ui.spectrogram_before, self.ui.spectrogram_after]
-        self.ui.pushButton.clicked.connect(lambda: self.generatePDF())
-        self.ui.actionSave.triggered.connect(lambda: self.generatePDF())
+        self.ui.save_session_data.clicked.connect(lambda: self.save_session())
+        self.ui.actionSave.triggered.connect(lambda: self.save_session())
 
-        
         self.audio_player_before = QMediaPlayer()
         self.audio_player_after = QMediaPlayer()
-        self.plot = {'before': self.ui.graph_before, 'after': self.ui.graph_after}
-        self.spectrogram = {'before': self.ui.spectrogram_before, 'after': self.ui.spectrogram_after}
+        self.audio_player_before.setNotifyInterval(1)
+        self.audio_player_after.setNotifyInterval(1)
 
         self.bands_powers = [0.0, 0.25, 0.50, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0]
-        self.bands = [None] * 10
 
-        self.band_slider = {
-            0: self.ui.band_1, 1: self.ui.band_2,
-            2: self.ui.band_3, 3: self.ui.band_4,
-            4: self.ui.band_5, 5: self.ui.band_6,
-            6: self.ui.band_7, 7: self.ui.band_8,
-            8: self.ui.band_9, 9: self.ui.band_10,
-        }
-
-        self.min_slider_ = [0, 2205, 4410, 6615, 8820, 11025, 13230, 15435, 17640, 19845, 22050] 
-        self.max_silder_ = [0, 2205, 4410, 6615, 8820, 11025, 13230, 15435, 17640, 19845, 22050]
-        self.current_min = 0
-        self.current_max = 22050
+        self.spectrogram_power_range = {'min': np.array([]), 'max': np.array([])}
         
-        self.ui.max_freq_content.setDisabled(True)
-        self.ui.max_freq_content.setStyleSheet('selection-background-color: grey')
-        self.ui.min_freq_content.setDisabled(True)
-        self.ui.min_freq_content.setStyleSheet('selection-background-color: grey')
 
+        self.ui.min_pixel_intensity.valueChanged.connect(lambda: self.spectrogram_pixels_intensity('min'))
+        self.ui.max_pixel_intensity.valueChanged.connect(lambda: self.spectrogram_pixels_intensity('max'))
 
-        self.ui.max_freq_content.valueChanged.connect(lambda: self.range_max())
-        self.ui.min_freq_content.valueChanged.connect(lambda: self.range_min())
+        self.spectrogram_time_min, self.spectrogram_time_max = 0, 0             # Sync With Play
 
-        self.spectrogram_time_min, self.spectrogram_time_max = 0, 0
+        self.band_slider = {}
+        self.band_label = {}
+
+        for index in range(10):
+            self.band_slider[index] = getattr(self.ui, 'band_{}'.format(index+1))
+            self.band_label[index] = getattr(self.ui, 'band_{}_label'.format(index+1))
+            
+
         for slider in self.band_slider.values():
             slider.setDisabled(True)
-            slider.setStyleSheet('selection-background-color: grey');
+            slider.setStyleSheet('selection-background-color: grey')
+
+        for index, slider in self.band_slider.items():
+            slider.valueChanged.connect(lambda _, index=index: self.slider_gain_updated(index))
 
         self.available_palettes = ['twilight', 'Blues', 'Greys', 'ocean', 'nipy_spectral']
         self.current_color_palette = self.available_palettes[0]
 
-        self.ui.band_1.valueChanged.connect(lambda: self.slider_gain_updated(0))
-        self.ui.band_2.valueChanged.connect(lambda: self.slider_gain_updated(1))
-        self.ui.band_3.valueChanged.connect(lambda: self.slider_gain_updated(2))
-        self.ui.band_4.valueChanged.connect(lambda: self.slider_gain_updated(3))
-        self.ui.band_5.valueChanged.connect(lambda: self.slider_gain_updated(4))
-        self.ui.band_6.valueChanged.connect(lambda: self.slider_gain_updated(5))
-        self.ui.band_7.valueChanged.connect(lambda: self.slider_gain_updated(6))
-        self.ui.band_8.valueChanged.connect(lambda: self.slider_gain_updated(7))
-        self.ui.band_9.valueChanged.connect(lambda: self.slider_gain_updated(8))
-        self.ui.band_10.valueChanged.connect(lambda: self.slider_gain_updated(9))
-
-
-        self.filtered_bands = []
         self.modified_signal = np.array([])
         self.current_slider_gain = [1.0] * 10
-        
 
-        self.band_label = {
-            0: self.ui.band_1_label, 1: self.ui.band_2_label,
-            2: self.ui.band_3_label, 3: self.ui.band_4_label,
-            4: self.ui.band_5_label, 5: self.ui.band_6_label,
-            6: self.ui.band_7_label, 7: self.ui.band_8_label,
-            8: self.ui.band_9_label, 9: self.ui.band_10_label,
-        }
-        
-        self.controls = {
-            'before': {
-                'play':self.ui.play_btn_before,
-                'pause': self.ui.pause_btn_before, 
-                'stop': self.ui.stop_btn_before,
-                'jump_forward': self.ui.jump_forward_btn_before,
-                'jump_backward': self.ui.jump_back_btn_before,
-                'current_time': self.ui.current_time_before,
-                'total_time': self.ui.total_time_before,
-                'time_slider': self.ui.time_seeker_before
-            },
-            'after':{
-                'play':self.ui.play_btn_after, 
-                'pause': self.ui.pause_btn_after,
-                'stop': self.ui.stop_btn_after,
-                'jump_forward': self.ui.jump_forward_btn_after,
-                'jump_backward': self.ui.jump_back_btn_after,
-                'current_time': self.ui.current_time_after,
-                'total_time': self.ui.total_time_after,
-                'time_slider': self.ui.time_seeker_after
-                }
-            }
+        self.controlers = {'before': [], 'after': []}
+
+        for button, function in zip(['zoom_in', 'zoom_out', 'jump_forward', 'jump_back'], [self.zoomin, self.zoomout, self.forward, self.back]):
+            self.controlers['before'].append((getattr(self.ui, '{}_btn_before'.format(button)), function))
+            self.controlers['after'].append((getattr(self.ui, '{}_btn_after'.format(button)), function))
+
+        for channel in self.controlers.values():
+            for signal in channel:
+                signal[0].clicked.connect(signal[1])
 
         self.plot_widget = {
             'before': self.ui.graph_before,
@@ -137,21 +101,25 @@ class MainWindow(qtw.QMainWindow):
             'after': None
         }
 
+        self.playback_position = {
+            'before': None,
+            'after': None
+        }
+
+        self.time_seeker = {
+            'before': self.ui.time_seeker_before,
+            'after': self.ui.time_seeker_after
+        }
+
+        self.total_time = {
+            'before': self.ui.total_time_before,
+            'after': self.ui.total_time_after
+        }
+
         self.ui.actionExit.triggered.connect(self.close)
         self.ui.actionNew.triggered.connect(self.new_instance)
         self.ui.actionOpen.triggered.connect(self.open_audio_file)
 
-        self.ui.zoom_in_btn_after.clicked.connect(self.zoomin)
-        self.ui.zoom_in_btn_before.clicked.connect(self.zoomin)
-
-        self.ui.zoom_out_btn_after.clicked.connect(self.zoomout)
-        self.ui.zoom_out_btn_before.clicked.connect(self.zoomout)
-
-        self.ui.jump_back_btn_before.clicked.connect(self.back)
-        self.ui.jump_back_btn_after.clicked.connect(self.back)
-
-        self.ui.jump_forward_btn_before.clicked.connect(self.forward)
-        self.ui.jump_forward_btn_after.clicked.connect(self.forward)
 
         self.ui.play_btn_before.clicked.connect(self.audio_player_before.play)
         self.ui.pause_btn_before.clicked.connect(self.audio_player_before.pause)
@@ -164,20 +132,111 @@ class MainWindow(qtw.QMainWindow):
         self.ui.palettes_box.currentTextChanged.connect(self.change_palette)
 
         self.ui.playback_speed_before.currentIndexChanged.connect(lambda: self.audio_player_before.setPlaybackRate(float(self.ui.playback_speed_before.currentText()[1:])))
-        self.audio_player_before.durationChanged.connect(lambda duration: self.update_duration(duration))
+        self.audio_player_before.durationChanged.connect(lambda duration: self.update_duration(duration, 'before'))
 
         self.ui.playback_speed_after.currentIndexChanged.connect(lambda: self.audio_player_after.setPlaybackRate(float(self.ui.playback_speed_after.currentText()[1:])))
-        self.audio_player_after.durationChanged.connect(lambda duration: self.update_duration_after(duration))
+        self.audio_player_after.durationChanged.connect(lambda duration: self.update_duration(duration, 'after'))
 
-    def range_max(self):
-        self.current_max = self.max_silder_[int(self.ui.max_freq_content.value())]
-        self.ui.max_freq_content_lab.setText(str(self.current_max))
+
+    def new_instance(self):
+        self.new_instance = MainWindow()
+        self.new_instance.show()
+
+    def open_audio_file(self):
+        path = qtw.QFileDialog.getOpenFileName(None, 'Load Audio', './', "Audio File(*.wav)")[0]
+
+        for slider in self.band_slider.values():
+            slider.setDisabled(False)
+            slider.setStyleSheet('selection-background-color: blue')
+
+        self.ui.max_pixel_intensity.setDisabled(False)
+        self.ui.max_pixel_intensity.setStyleSheet('selection-background-color: blue')
+        self.ui.min_pixel_intensity.setDisabled(False)
+        self.ui.min_pixel_intensity.setStyleSheet('selection-background-color: blue')
+        
+        self.audio_player_before.setMedia(QMediaContent(qtc.QUrl.fromLocalFile(path)))
+        self.audio_player_before.positionChanged.connect(lambda position: self.update_timestamp(position, self.ui.current_time_before, self.ui.time_seeker_before, 'before'))
+        self.ui.time_seeker_before.valueChanged.connect(self.audio_player_before.setPosition)
+        self.sampling_rate, self.samples = scipy.io.wavfile.read(path)
+        self.plot_graph(self.samples, self.sampling_rate, 'before')
         self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
+        self.modify_signal()
+
+    def plot_graph(self, samples, sampling_rate, widget):
+        peak_value = np.amax(samples)
+        normalized_data = samples / peak_value
+        length = samples.shape[0] / sampling_rate
+        time = list(np.linspace(0, length, samples.shape[0]))
+
+        drawing_pen = pg.mkPen(color=(255, 0, 0), width=0.5)
+        self.plot_widget[widget].removeItem(self.data_line[widget])
+        self.data_line[widget] = self.plot_widget[widget].plot(
+            time, normalized_data, pen=drawing_pen)
+        self.plot_widget[widget].plotItem.setLabel(axis='left', text='Normalized Amplitude')
+        self.plot_widget[widget].plotItem.setLabel(axis='bottom', text='time [s]')
+        self.plot_widget[widget].plotItem.getViewBox().setLimits(xMin=0, xMax=np.max(time), yMin=-1.1, yMax=1.1)
+        self.spectrogram_time_min, self.spectrogram_time_max = self.plot_widget[widget].plotItem.getAxis('bottom').range
+        self.playback_position[widget] = pyqtgraph.LinearRegionItem(values=(0, 0))
+        self.plot_widget[widget].plotItem.getViewBox().addItem(self.playback_position[widget])
+
+
+    def plot_spectrogram(self, samples, sampling_rate, widget):
+        self.spectrogram_widget[widget].getFigure().clear()
+        spectrogram_axes = self.spectrogram_widget[widget].getFigure().add_subplot(111)
+
+        data = samples.astype('float32')
+        frequency_magnitude = np.abs(librosa.stft(data))**2
+
+        mel_spectrogram = librosa.feature.melspectrogram(S=frequency_magnitude, y=data, sr=sampling_rate, n_mels=128)
+
+        decibel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+        if self.first_turn:
+            min_intensity = np.ceil(np.amin(decibel_spectrogram))
+            max_intensity = np.ceil(np.amax(decibel_spectrogram))
+
+            self.spectrogram_power_range['min'] = np.linspace(min_intensity, min_intensity/2, 10).astype('int')
+            self.spectrogram_power_range['min'] = np.append(self.spectrogram_power_range['min'], np.array([self.spectrogram_power_range['min'][0]]))
+            self.spectrogram_power_range['max'] = np.linspace((min_intensity+1)/2, max_intensity, 10).astype('int')
+            self.spectrogram_power_range['max'] = np.append(self.spectrogram_power_range['max'], np.array([self.spectrogram_power_range['max'][-1]]))
+            self.ui.min_pixel_intensity_lab.setText(str(self.spectrogram_power_range['min'][-1]))
+            self.ui.max_pixel_intensity_lab.setText(str(self.spectrogram_power_range['max'][-1]))
+            self.first_turn = False
+
+        spectrogram_image = librosa.display.specshow(decibel_spectrogram, x_axis='time', y_axis='mel', sr=sampling_rate,
+                ax=spectrogram_axes, cmap=self.current_color_palette, vmin=self.spectrogram_power_range['min'][-1], vmax=self.spectrogram_power_range['max'][-1])
+
+        self.spectrogram_widget[widget].getFigure().colorbar(spectrogram_image, ax=spectrogram_axes, format='%+2.0f dB')
+        spectrogram_axes.set(xlim=[self.spectrogram_time_min, self.spectrogram_time_max])
+        self.spectrogram_widget[widget].draw()
+
+    def modify_signal(self):
+        frequency_content = np.fft.rfftfreq(len(self.samples), d=1/self.sampling_rate)
+        modified_signal = np.fft.rfft(self.samples)
+        for index, slider_gain in enumerate(self.current_slider_gain):
+            frequency_range_min = (index + 0) * self.sampling_rate / (2 * 10)
+            frequency_range_max = (index + 1) * self.sampling_rate / (2 * 10)
+
+            range_min_frequency = frequency_content > frequency_range_min
+            range_max_frequency = frequency_content <= frequency_range_max
+            
+            slider_min_max = []
+            for is_in_min_frequency, is_in_max_frequency in zip(range_min_frequency, range_max_frequency):
+                slider_min_max.append(is_in_min_frequency and is_in_max_frequency)
+
+            modified_signal[slider_min_max] *= slider_gain
+
+        self.samples_after = np.fft.irfft(modified_signal)
+
+        self.save_output_wav()
+
+        self.plot_graph(self.samples_after, self.sampling_rate, 'after')
         self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
 
-    def range_min(self):
-        self.current_min = self.min_slider_[int(self.ui.min_freq_content.value())]
-        self.ui.min_freq_content_lab.setText(str(self.current_min))
+    def spectrogram_pixels_intensity(self, widget):
+        slider = getattr(self.ui, '{}_pixel_intensity'.format(widget))
+        self.spectrogram_power_range[widget][-1] = self.spectrogram_power_range[widget][int(slider.value())]
+        label = getattr(self.ui, '{}_pixel_intensity_lab'.format(widget))
+        label.setText(str(self.spectrogram_power_range[widget][-1]))
         self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
         self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
         
@@ -192,79 +251,14 @@ class MainWindow(qtw.QMainWindow):
         self.band_label[index].setText(f'{slider_gain}')
         self.current_slider_gain[index] = slider_gain
         self.modify_signal()
-        
-
-
-    def modify_signal(self):
-        frequency_content = np.fft.rfftfreq(len(self.samples), d=1/self.sampling_rate)
-        modified_signal = np.fft.rfft(self.samples)
-        for index, slider_gain in enumerate(self.current_slider_gain):
-            frequency_range_min = (index + 0) * self.sampling_rate / (2 * 10)
-            frequency_range_max = (index + 1) * self.sampling_rate / (2 * 10)
-
-            x = frequency_content > frequency_range_min
-            y = frequency_content <= frequency_range_max
-            
-            z = []
-            for a, b in zip(x, y):
-                z.append(a and b)
-
-
-            modified_signal[z] *= slider_gain
-
-        self.samples_after = np.fft.irfft(modified_signal)
-
-        samplerate = 44100
-        try:
-            shutil.rmtree('wav')
-            os.mkdir('wav')
-        except:
-            os.mkdir('wav')
-        now = datetime.now()
-        now = f'{now:%Y-%m-%d %H-%M-%S.%f %p}'
-        scipy.io.wavfile.write(f"wav/SBME{now}.wav", samplerate, self.samples_after.astype(np.int16))
-        path = os.listdir('wav')
-        self.audio_player_after.setMedia(QMediaContent(qtc.QUrl.fromLocalFile(f'wav/{path[0]}')))
-        self.audio_player_after.positionChanged.connect(lambda position: self.update_timestamp(position, self.ui.current_time_after, self.ui.time_seeker_after))
-        self.ui.time_seeker_after.valueChanged.connect(self.audio_player_after.setPosition)
-
-        self.plot_graph(self.samples_after, self.sampling_rate, 'after')
-        
-
-    
-    def open_audio_file(self):
-        filename = qtw.QFileDialog.getOpenFileName(
-            None, 'Load Audio', './', "Audio File(*.wav)")
-        path = filename[0]
-
-        
-        self.audio_player_before.setMedia(QMediaContent(qtc.QUrl.fromLocalFile(path)))
-        self.sampling_rate, self.samples = scipy.io.wavfile.read(path)
-        self.plot_graph(self.samples, self.sampling_rate, 'before')
-        self.audio_player_before.positionChanged.connect(lambda position: self.update_timestamp(position, self.ui.current_time_before, self.ui.time_seeker_before))
-        self.ui.time_seeker_before.valueChanged.connect(self.audio_player_before.setPosition)
-        for slider in self.band_slider.values():
-            slider.setDisabled(False)
-            slider.setStyleSheet('selection-background-color: blue')
-        self.ui.max_freq_content.setDisabled(False)
-        self.ui.max_freq_content.setStyleSheet('selection-background-color: blue')
-        self.ui.min_freq_content.setDisabled(False)
-        self.ui.min_freq_content.setStyleSheet('selection-background-color: blue')
-        self.modify_signal()
       
-    def update_duration(self, duration):
-        self.ui.time_seeker_before.setMaximum(duration)
+    def update_duration(self, duration, widget):
+        self.time_seeker[widget].setMaximum(duration)
 
         if duration >= 0:
-            self.ui.total_time_before.setText(time_stamp(duration))
-    
-    def update_duration_after(self, duration):
-        self.ui.time_seeker_after.setMaximum(duration)
+            self.total_time[widget].setText(time_stamp(duration))
 
-        if duration >= 0:
-            self.ui.total_time_after.setText(time_stamp(duration))
-
-    def update_timestamp(self, position, currentTimeLabel, timeSlider):
+    def update_timestamp(self, position, currentTimeLabel, timeSlider, widget):
         if position >= 0:
             currentTimeLabel.setText(time_stamp(position))
 
@@ -272,88 +266,57 @@ class MainWindow(qtw.QMainWindow):
         timeSlider.setValue(position)
         timeSlider.blockSignals(False)
 
-    def plot_graph(self, samples, sampling_rate, widget):
-        # Preparing received data
-        peak_value = np.amax(samples)
-        normalized_data = samples / peak_value
-        length = samples.shape[0] / sampling_rate
-        time = list(np.linspace(0, length, normalized_data.shape[0]))
+        self.playback_position[widget].setRegion((position/1000, position/1000))
+        minRange, maxRange = self.plot_widget[widget].plotItem.getAxis('bottom').range
+        if(position >= maxRange * 1000):
+            self.plot_widget[widget].plotItem.getViewBox().translateBy((maxRange-minRange), 0)
+            self.synchronize()
 
-        drawing_pen = pg.mkPen(color=(255, 0, 0), width=0.5)
-        self.plot_widget[widget].removeItem(self.data_line[widget])
-        self.data_line[widget] = self.plot_widget[widget].plot(
-            time, normalized_data, pen=drawing_pen)
-        self.plot_widget[widget].plotItem.setLabel(axis='left', text='Normalized Amplitude')
-        self.plot_widget[widget].plotItem.setLabel(axis='bottom', text='time [s]')
-        self.plot_widget[widget].plotItem.getViewBox().setLimits(xMin=0, xMax=np.max(time), yMin=-1.1, yMax=1.1)
-        self.spectrogram_time_min, self.spectrogram_time_max = self.plot_widget[widget].plotItem.getAxis('bottom').range
-        # self.playback_position[widget] = pyqtgraph.LinearRegionItem(values=(0, 0))
-        # self.plot_widget[widget].plotItem.getViewBox().addItem(self.playback_position[widget])
-            
+        if(position <= minRange * 1000):
+            self.plot_widget[widget].plotItem.getViewBox().translateBy(-minRange)
+            self.synchronize()
 
-        self.plot_spectrogram(samples, sampling_rate, widget)
-
-    def plot_spectrogram(self, samples, sampling_rate, widget):
-        axes = self.spectrogram_widget[widget].getFigure().clear()
-        axes = self.spectrogram_widget[widget].getFigure().add_subplot(111)
-
-        data = samples.astype('float32')
-        D = np.abs(librosa.stft(data))**2
-
-        S = librosa.feature.melspectrogram(S=D, y=data, sr=sampling_rate, n_mels=128,
-                                            fmin=self.current_min ,fmax=self.current_max)
-
-        S_dB = librosa.power_to_db(S, ref=np.max)
-
-        img = librosa.display.specshow(S_dB, x_axis='time',
-
-                         y_axis='mel', sr=sampling_rate,
-
-                        fmin=self.current_min ,fmax=self.current_max,  ax=axes, cmap=self.current_color_palette)
-                         
-        self.spectrogram_widget[widget].getFigure().colorbar(img, ax=axes, format='%+2.0f dB')
-        axes.set(xlim=[self.spectrogram_time_min, self.spectrogram_time_max])
-        self.spectrogram_widget[widget].draw()
+    hours
 
     def zoomin(self) -> None:
         self.ui.graph_before.plotItem.getViewBox().scaleBy((0.75, 1.0))
-        self.ui.graph_before.plotItem.getViewBox().setXLink(self.ui.graph_after.plotItem)
-        self.spectrogram_time_min, self.spectrogram_time_max = self.ui.graph_before.plotItem.getAxis('bottom').range
-        self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
-        self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
+        self.synchronize()
 
     def zoomout(self) -> None:
         self.ui.graph_before.plotItem.getViewBox().scaleBy((1.25, 1.0))
-        self.ui.graph_before.plotItem.getViewBox().setXLink(self.ui.graph_after.plotItem)
-        self.spectrogram_time_min, self.spectrogram_time_max = self.ui.graph_before.plotItem.getAxis('bottom').range
-        self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
-        self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
+        self.synchronize()
 
     def back(self):
         self.ui.graph_before.plotItem.getViewBox().translateBy((-0.5, 0.0))
-        self.ui.graph_before.plotItem.getViewBox().setXLink(self.ui.graph_after.plotItem)
-        self.spectrogram_time_min, self.spectrogram_time_max = self.ui.graph_before.plotItem.getAxis('bottom').range
-        self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
-        self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
+        self.synchronize()
 
     def forward(self):
         self.ui.graph_before.plotItem.getViewBox().translateBy((0.5, 0.0))
+        self.synchronize()
+
+    def synchronize(self):
         self.ui.graph_before.plotItem.getViewBox().setXLink(self.ui.graph_after.plotItem)
         self.spectrogram_time_min, self.spectrogram_time_max = self.ui.graph_before.plotItem.getAxis('bottom').range
         self.plot_spectrogram(self.samples, self.sampling_rate, 'before')
         self.plot_spectrogram(self.samples_after, self.sampling_rate, 'after')
 
 
-    def generatePDF(self):
-        images = [0, 0]
-        Idx = 0
-        for channel in range(2):
-            self.amplitude[channel]
-            images[channel] = 1
-            Idx += 1
-            
+    def save_output_wav(self):
+        try:
+            shutil.rmtree('wav')
+            os.mkdir('wav')
+        except:
+            os.mkdir('wav')
+        self.now = datetime.now()
+        self.now = f'{self.now:%Y-%m-%d %H-%M-%S.%f %p}'
+        scipy.io.wavfile.write(f"wav/SBME{self.now}.wav", self.sampling_rate, self.samples_after.astype(np.int16))
+        path = os.listdir('wav')
+        self.audio_player_after.setMedia(QMediaContent(qtc.QUrl.fromLocalFile(f'wav/{path[0]}')))
+        self.audio_player_after.positionChanged.connect(lambda position: self.update_timestamp(position, self.ui.current_time_after, self.ui.time_seeker_after, 'after'))
+        self.ui.time_seeker_after.valueChanged.connect(self.audio_player_after.setPosition)
 
-        if not Idx:
+    def save_session(self):
+        if not self.sampling_rate:
             qtw.QMessageBox.information(
                 self, 'failed', 'You have to plot a signal first')
             return
@@ -364,40 +327,36 @@ class MainWindow(qtw.QMainWindow):
         except FileNotFoundError:
             os.mkdir(self.PLOT_DIR)
 
-        for channel in range(2):
-            if images[channel]:
+        for index, channel in enumerate(['before', 'after']):
+            exporter = pg.exporters.ImageExporter(
+                self.plot_widget[channel].scene())
+            exporter.export(f'{self.PLOT_DIR}/plot-{index}.png')
 
-                exporter = pg.exporters.ImageExporter(
-                    self.graphChannels[channel].scene())
-                exporter.export(f'{self.PLOT_DIR}/plot-{channel}.png')
-
-                self.spectrogramChannels[channel].fig.savefig(f'{self.PLOT_DIR}/spec-{channel}.png')
+            self.spectrogram_widget[channel].fig.savefig(f'{self.PLOT_DIR}/spec-{index}.png')
 
         pdf = PDF()
         plots_per_page = pdf.construct(self.PLOT_DIR)
-        [['plot1', 'spec1'], ['plot2', 'spec2']]
 
-        for elem in plots_per_page:
-            pdf.print_page(elem, self.PLOT_DIR)
+        for page_images in plots_per_page:
+            pdf.print_page(page_images, self.PLOT_DIR)
 
-        now = datetime.now()
-        now = f'{now:%Y-%m-%d %H-%M-%S.%f %p}'
-        try:
-            os.mkdir(self.PDF_DIR)
-        except:
-            pass
-        pdf.output(f'{self.PDF_DIR}/{now}.pdf', 'F')
+        outFile = qtw.QFileDialog.getSaveFileName(
+            None, 'Save Session', './', "PDF File(*.pdf)")
+        pdf.output(outFile[0], 'F')
         try:
             shutil.rmtree(self.PLOT_DIR)
         except:
             pass
 
         qtw.QMessageBox.information(self, 'success', 'PDF has been created')
-  
 
-    def new_instance(self):
-        self.new_instance = MainWindow()
-        self.new_instance.show()
+        sampling_rate, samples = scipy.io.wavfile.read(f"wav/SBME{self.now}.wav")
+        outFile = qtw.QFileDialog.getSaveFileName(
+            None, 'Save Session', './', "Wav File(*.wav)")
+        scipy.io.wavfile.write(outFile[0], sampling_rate, samples.astype(np.int16))
+        qtw.QMessageBox.information(self, 'success', 'Wav has been saved')
+        
+        
 
 if __name__ == '__main__':
     app = qtw.QApplication(sys.argv)
